@@ -5,7 +5,7 @@
     - Logic: VolQ5 & Pollinations.AI (LLM Model)
     - Status: Stable 
     - v1.3.3: Added comprehensive LuaU type annotations, UIFactory improvements, connection leak prevention
-    - v1.3.4: Added fling toggle button to quick actions, fixed ESP command execution
+    - v1.3.4: Added fling toggle button to quick actions, kept original ESP handling
 ]]
 
 --// ============================================
@@ -958,11 +958,10 @@ end)
 --// ============================================
 --// 3. QUICK ACTIONS MANAGER (v1.3.4)
 --// ============================================
--- Manages quick action buttons and state
+-- Manages quick action button states
 local QuickActionsManager = {}
 local _quickActionStates = {
-    fling = false,
-    esp = false
+    fling = false
 }
 
 --- Toggle fling command
@@ -970,17 +969,13 @@ local _quickActionStates = {
 function QuickActionsManager:toggleFling()
     _quickActionStates.fling = not _quickActionStates.fling
     local command = _quickActionStates.fling and ";fling" or ";unfling"
-    EventBus:emit("EXECUTE_COMMAND", command)
+    -- Execute command via IY if available
+    if _G.executeCmd then
+        _G.executeCmd(command)
+    elseif _G.execute then
+        _G.execute(command)
+    end
     return _quickActionStates.fling
-end
-
---- Toggle ESP command
---- @return boolean -- New state
-function QuickActionsManager:toggleEsp()
-    _quickActionStates.esp = not _quickActionStates.esp
-    local command = _quickActionStates.esp and ";esp" or ";noesp"
-    EventBus:emit("EXECUTE_COMMAND", command)
-    return _quickActionStates.esp
 end
 
 --- Get fling state
@@ -989,16 +984,9 @@ function QuickActionsManager:getFlingState()
     return _quickActionStates.fling
 end
 
---- Get ESP state
---- @return boolean
-function QuickActionsManager:getEspState()
-    return _quickActionStates.esp
-end
-
---- Reset all states (on shutdown/restart)
+--- Reset all states
 function QuickActionsManager:reset()
     _quickActionStates.fling = false
-    _quickActionStates.esp = false
 end
 
 
@@ -1019,7 +1007,7 @@ local UIFactory = {}
 function UIFactory:createQuickActionButton(parent, index, label, callback, activeColor, inactiveColor)
     local buttonSize = CONFIG.MobileMinCellSize
     local padding = 4
-    local buttonsPerRow = 3 -- 3 buttons per row for compact layout
+    local buttonsPerRow = 3
     
     local row = math.floor((index - 1) / buttonsPerRow)
     local col = (index - 1) % buttonsPerRow
@@ -1075,13 +1063,14 @@ end
 --- @param parent GuiObject -- Parent container
 --- @return Frame
 function UIFactory:createQuickActionsPanel(parent)
-    local panelHeight = math.ceil(3 / 3) * (CONFIG.MobileMinCellSize + 4) + 8 -- 3 rows of buttons
+    local panelHeight = math.ceil(1 / 3) * (CONFIG.MobileMinCellSize + 4) + 8
     
     local panel = Instance.new("Frame")
     panel.Name = "QuickActionsPanel"
     panel.Size = UDim2.new(1, -16, 0, panelHeight)
     panel.Position = UDim2.new(0, 8, 0, 70)
     panel.BackgroundColor3 = Color3.fromRGB(36, 36, 37)
+    panel.BackgroundTransparency = 0.2
     panel.Parent = parent
     
     -- Add corner radius
@@ -1089,36 +1078,14 @@ function UIFactory:createQuickActionsPanel(parent)
     corner.CornerRadius = UDim.new(0, 6)
     corner.Parent = panel
     
-    -- Create fling button
+    -- Create fling toggle button
     self:createQuickActionButton(
         panel, 1, "FLING",
         function()
             local state = QuickActionsManager:toggleFling()
-            EventBus:emit("QUICK_ACTION_TOGGLED", {action = "fling", state = state})
+            warn("[SIY] Fling toggled: " .. tostring(state))
         end,
-        Color3.fromRGB(200, 80, 80),  -- Red when active
-        Color3.fromRGB(46, 46, 47)
-    )
-    
-    -- Create ESP button
-    self:createQuickActionButton(
-        panel, 2, "ESP",
-        function()
-            local state = QuickActionsManager:toggleEsp()
-            EventBus:emit("QUICK_ACTION_TOGGLED", {action = "esp", state = state})
-        end,
-        Color3.fromRGB(80, 200, 80),  -- Green when active
-        Color3.fromRGB(46, 46, 47)
-    )
-    
-    -- Create Fly button (placeholder for expansion)
-    self:createQuickActionButton(
-        panel, 3, "FLY",
-        function()
-            EventBus:emit("EXECUTE_COMMAND", ";fly")
-            EventBus:emit("QUICK_ACTION_TOGGLED", {action = "fly", state = true})
-        end,
-        Color3.fromRGB(80, 150, 255),  -- Blue when active
+        Color3.fromRGB(200, 80, 80),
         Color3.fromRGB(46, 46, 47)
     )
     
@@ -1128,71 +1095,7 @@ function UIFactory:createQuickActionsPanel(parent)
 end
 
 --// ============================================
---// 5. COMMAND EXECUTION ENGINE (v1.3.4 - ESP FIX)
---// ============================================
-local CommandExecutor = {}
-
---- Execute an IY command string
---- @param commandString string -- Command like ";fling" or ";esp"
-function CommandExecutor:execute(commandString)
-    if not commandString or commandString == "" then
-        ErrorHandler:report("CommandExecutor", "Empty command string", "warning")
-        return false
-    end
-    
-    -- Strip leading semicolon if present
-    local cmd = commandString:gsub("^;", ""):lower()
-    
-    -- Emit execution event
-    EventBus:emit("COMMAND_EXECUTING", cmd)
-    
-    -- Try to execute via IY's global command system
-    if _G.Commands then
-        local success, result = pcall(function()
-            -- IY executes commands via GetCommand or direct execution
-            if type(_G.Commands[cmd]) == "function" then
-                return _G.Commands[cmd]()
-            elseif _G.executeCommand then
-                return _G.executeCommand(cmd)
-            end
-        end)
-        
-        if success then
-            EventBus:emit("COMMAND_EXECUTED", cmd)
-            SoundManager:play("Success")
-            return true
-        end
-    end
-    
-    -- Fallback: execute as lua if permitted
-    if type(_G.execute) == "function" then
-        local success, result = pcall(function()
-            return _G.execute(cmd)
-        end)
-        
-        if success then
-            EventBus:emit("COMMAND_EXECUTED", cmd)
-            SoundManager:play("Success")
-            return true
-        else
-            ErrorHandler:report("CommandExecutor", "Failed to execute: " .. cmd, "error")
-            EventBus:emit("COMMAND_FAILED", cmd)
-            SoundManager:play("Error")
-            return false
-        end
-    end
-    
-    ErrorHandler:report("CommandExecutor", "No command executor found", "warning")
-    return false
-end
-
--- Listen for command execution events
-EventBus:on("EXECUTE_COMMAND", function(command)
-    CommandExecutor:execute(command)
-end)
-
---// ============================================
---// 6. LOCAL PLAYER & ENVIRONMENT
+--// 5. LOCAL PLAYER & ENVIRONMENT
 --// ============================================
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local GameName = "Loading..."
@@ -1200,7 +1103,7 @@ local GameCreatorId = nil
 local GameGenre = nil
 local PlayerTeam = nil
 
--- HTTP Request Handler (Multi-Executor Support)
+-- HTTP Request Handler
 local httpRequest = (syn and syn.request) 
     or (http and http.request) 
     or http_request 
@@ -1211,7 +1114,7 @@ if not httpRequest then
     warn("SIY: Executor incompatible - HTTP requests unavailable.") 
 end
 
--- Async Game Info Fetcher (Auto-Context Injection)
+-- Async Game Info Fetcher
 task.spawn(function()
     local success, info = pcall(MarketplaceService.GetProductInfo, MarketplaceService, game.PlaceId)
     if success and info then
@@ -1238,8 +1141,23 @@ task.spawn(function()
 end)
 
 --// ============================================
---// 7. INITIALIZATION & STARTUP
+--// 6. INITIALIZATION & STARTUP
 --// ============================================
 LifecycleManager:startup()
-EventBus:emit("SYSTEM_READY")
-warn("[SIY v1.3.4] System initialized with fling toggle and ESP fix enabled")
+
+-- Create UI if CoreGui is available
+task.spawn(function()
+    task.wait(0.5)
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
+    if playerGui then
+        local screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "SIYGui"
+        screenGui.ResetOnSpawn = false
+        screenGui.Parent = playerGui
+        
+        UIFactory:createQuickActionsPanel(screenGui)
+        warn("[SIY v1.3.4] UI Created - Fling toggle ready!")
+    end
+end)
+
+warn("[SIY v1.3.4] System initialized with fling toggle button")
